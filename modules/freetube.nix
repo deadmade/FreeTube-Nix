@@ -64,9 +64,9 @@ let
         example = "@CalcioBerlin";
         description = ''
           YouTube channel handle (e.g. "@CalcioBerlin"). When set and
-          {option}`id` is null, the activation script queries
-          {option}`programs.freetube.invidiousInstance` to resolve the
-          channel ID automatically and caches the result in
+          {option}`id` is null, the activation script uses
+          {command}`yt-dlp` to resolve the channel ID automatically and
+          caches the result in
           {file}`~/.config/FreeTube/channel_ids.lock.json`.
         '';
       };
@@ -484,20 +484,6 @@ in
 
     package = mkPackageOption pkgs "freetube" { nullable = true; };
 
-    invidiousInstance = mkOption {
-      type    = types.str;
-      default = "https://inv.nadeko.net";
-      example = "https://invidious.example.com";
-      description = ''
-        Invidious instance base URL used by the activation script to resolve
-        channel handles to YouTube channel IDs.
-
-        The resolved IDs are cached in
-        {file}`~/.config/FreeTube/channel_ids.lock.json`; delete that file
-        to force a fresh lookup (e.g. after changing instance).
-      '';
-    };
-
     settings = mkOption {
       type = settingsType;
       default = {};
@@ -597,37 +583,22 @@ in
         _ft_raw="${config.xdg.configHome}/FreeTube/hm_profiles_raw.json"
         _ft_cache="$HOME/.config/FreeTube/channel_ids.lock.json"
         _ft_profiles="$HOME/.config/FreeTube/profiles.db"
-        _ft_invidious="${cfg.invidiousInstance}"
 
         run mkdir -p "$(dirname "$_ft_profiles")"
         [ -f "$_ft_cache" ] || echo '{}' > "$_ft_cache"
 
-        # Resolve any handle not yet in the cache.
-        # Attempt 1: /channels/<handle> (fast, supported on most instances).
-        # Attempt 2: /search?q=<handle>&type=channel (universal fallback).
+        # Resolve any handle not yet in the cache using yt-dlp.
         for _ft_handle in $(${pkgs.jq}/bin/jq -r \
             '[.[].subscriptions[] | select(.id == null and .handle != null) | .handle] | unique[]' \
             "$_ft_raw"); do
           if ! ${pkgs.jq}/bin/jq -e --arg h "$_ft_handle" 'has($h)' "$_ft_cache" > /dev/null 2>&1; then
-            echo "freetube: resolving $_ft_handle via $_ft_invidious" >&2
-            _ft_id=""
-
-            _ft_id=$(${pkgs.curl}/bin/curl -s --max-time 10 \
-                --cacert "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt" \
-                "$_ft_invidious/api/v1/channels/$_ft_handle" \
-              | ${pkgs.jq}/bin/jq -r '(.authorId // .ucid) // empty' 2>/dev/null || true)
-
-            if [ -z "$_ft_id" ]; then
-              _ft_id=$(${pkgs.curl}/bin/curl -s --max-time 10 \
-                  --cacert "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt" \
-                  --get \
-                  --data-urlencode "q=$_ft_handle" \
-                  --data-urlencode "type=channel" \
-                  "$_ft_invidious/api/v1/search" \
-                | ${pkgs.jq}/bin/jq -r \
-                  '[.[] | select(.type == "channel")] | .[0].authorId // empty' \
-                  2>/dev/null || true)
-            fi
+            echo "freetube: resolving $_ft_handle" >&2
+            _ft_id=$(${pkgs.yt-dlp}/bin/yt-dlp \
+                --flat-playlist --playlist-items 1 -J --no-warnings \
+                "https://www.youtube.com/$_ft_handle" 2>/dev/null \
+              | ${pkgs.jq}/bin/jq -r \
+                '(.channel_id // .id) | select(. != null) | select(startswith("UC"))' \
+              2>/dev/null || true)
 
             if [ -n "$_ft_id" ]; then
               echo "freetube: $_ft_handle → $_ft_id" >&2
@@ -636,7 +607,6 @@ in
                 && mv "$_ft_cache.tmp" "$_ft_cache"
             else
               echo "freetube: warning: could not resolve $_ft_handle" >&2
-              echo "freetube: check that $_ft_invidious is reachable, or set programs.freetube.invidiousInstance to a different instance" >&2
             fi
           fi
         done
@@ -659,7 +629,7 @@ in
             ]
           }' "$_ft_raw" > "$_ft_profiles"
 
-        unset _ft_raw _ft_cache _ft_profiles _ft_invidious _ft_handle _ft_id
+        unset _ft_raw _ft_cache _ft_profiles _ft_handle _ft_id
       '');
 
     # Merge hm_settings.db into the live settings.db on every activation.

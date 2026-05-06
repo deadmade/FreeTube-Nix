@@ -262,12 +262,9 @@ Profiles are **fully declarative**: on every `home-manager switch` the module re
 
 ### Automatic handle resolution
 
-Set `handle` instead of `id` and the activation script will query the configured Invidious instance to look up the channel ID automatically. Resolved IDs are cached in `~/.config/FreeTube/channel_ids.lock.json` so each handle is only fetched once. Delete that file to force a fresh lookup.
+Set `handle` instead of `id` and the activation script will use `yt-dlp` to resolve the channel ID directly from YouTube. Resolved IDs are cached in `~/.config/FreeTube/channel_ids.lock.json` so each handle is only looked up once. Delete that file to force a fresh lookup.
 
 ```nix
-# Optional: override the Invidious instance used for handle resolution
-programs.freetube.invidiousInstance = "https://inv.nadeko.net";
-
 programs.freetube.profiles = [
   {
     _id       = "allChannels"; # internal FreeTube ID; the built-in profile uses "allChannels"
