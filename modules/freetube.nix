@@ -11,17 +11,42 @@ let
     concatStrings
     concatMapStrings
     mapAttrsToList
+    filterAttrs
     ;
 
   cfg = config.programs.freetube;
 
+  # Strip unset (null) fields before serialising so we only write keys the
+  # user actually configured.
+  filteredSettings = filterAttrs (_: v: v != null) cfg.settings;
+  hasSettings = filteredSettings != {};
+
   settingsText = concatStrings (mapAttrsToList (name: value:
     builtins.toJSON { _id = name; inherit value; } + "\n"
-  ) cfg.settings);
+  ) filteredSettings);
 
   profilesText = concatMapStrings (profile:
     builtins.toJSON profile + "\n"
   ) cfg.profiles;
+
+  # ---------------------------------------------------------------------------
+  # Sub-types
+  # ---------------------------------------------------------------------------
+
+  sponsorBlockActionType = types.enum [
+    "skip" "mute" "autoSkip" "doNothing" "showIcon"
+  ];
+
+  boundsType = types.submodule {
+    options = {
+      x         = mkOption { type = types.int;  default = 0;    description = "Window x position."; };
+      y         = mkOption { type = types.int;  default = 0;    description = "Window y position."; };
+      width     = mkOption { type = types.int;  default = 1280; description = "Window width in pixels."; };
+      height    = mkOption { type = types.int;  default = 720;  description = "Window height in pixels."; };
+      maximized  = mkOption { type = types.bool; default = false; description = "Start maximized."; };
+      fullScreen = mkOption { type = types.bool; default = false; description = "Start in full-screen mode."; };
+    };
+  };
 
   subscriptionType = types.submodule {
     options = {
@@ -74,6 +99,364 @@ let
     };
   };
 
+  # ---------------------------------------------------------------------------
+  # Typed settings submodule — every option is nullOr so that unset options
+  # are simply omitted from the generated settings.db lines.
+  # ---------------------------------------------------------------------------
+  settingsType = types.submodule {
+    options = {
+
+      # -- Video / Playback ---------------------------------------------------
+      allowDashAv1Formats = mkOption {
+        type    = types.nullOr types.bool;
+        default = null;
+        description = "Allow DASH AV1 video formats.";
+      };
+      defaultQuality = mkOption {
+        type    = types.nullOr (types.enum [ "144" "240" "360" "480" "720" "1080" "1440" "2160" "4320" "auto" ]);
+        default = null;
+        description = "Default video quality.";
+      };
+      playNextVideo = mkOption {
+        type    = types.nullOr types.bool;
+        default = null;
+        description = "Automatically play the next video in the list.";
+      };
+      thumbnailPreference = mkOption {
+        type    = types.nullOr (types.enum [ "default" "start" "end" ]);
+        default = null;
+        description = "Which thumbnail frame to display.";
+      };
+      blurThumbnails = mkOption {
+        type    = types.nullOr types.bool;
+        default = null;
+        description = "Blur video thumbnails.";
+      };
+
+      # -- Backend ------------------------------------------------------------
+      backendPreference = mkOption {
+        type    = types.nullOr (types.enum [ "local" "invidious" ]);
+        default = null;
+        description = "Preferred backend for fetching video data.";
+      };
+      backendFallback = mkOption {
+        type    = types.nullOr types.bool;
+        default = null;
+        description = "Fall back to the other backend on failure.";
+      };
+
+      # -- Appearance ---------------------------------------------------------
+      baseTheme = mkOption {
+        type = types.nullOr (types.enum [
+          "dark" "light" "black" "dracula"
+          "catppuccinMocha" "catppuccinMacchiato" "catppuccinFrappe" "catppuccinLatte"
+          "hotPink" "pastelPink" "nordic" "solarizedDark" "solarizedLight"
+        ]);
+        default = null;
+        description = "UI colour theme.";
+      };
+      listType = mkOption {
+        type    = types.nullOr (types.enum [ "list" "grid" ]);
+        default = null;
+        description = "Video list display style.";
+      };
+      currentLocale = mkOption {
+        type    = types.nullOr (types.strMatching "[a-z]{2}(-[A-Z]{2})?");
+        default = null;
+        example = "de-DE";
+        description = ''
+          UI locale code. Must be in the form "xx" or "xx-XX"
+          (e.g. "en", "de-DE", "zh-CN").
+        '';
+      };
+      landingPage = mkOption {
+        type = types.nullOr (types.enum [
+          "subscriptions" "subscribedchannels" "trending" "popular"
+          "playlists" "history" "settings"
+        ]);
+        default = null;
+        description = "Page shown on launch.";
+      };
+      bounds = mkOption {
+        type    = types.nullOr boundsType;
+        default = null;
+        description = "Initial window geometry and state.";
+      };
+      settingsSectionSortEnabled = mkOption {
+        type    = types.nullOr types.bool;
+        default = null;
+        description = "Sort settings sections alphabetically.";
+      };
+
+      # -- Privacy / History --------------------------------------------------
+      saveHistory = mkOption {
+        type    = types.nullOr types.bool;
+        default = null;
+        description = "Save watch history locally.";
+      };
+      checkForUpdates = mkOption {
+        type    = types.nullOr types.bool;
+        default = null;
+        description = "Check for FreeTube updates on startup.";
+      };
+      useRssFeeds = mkOption {
+        type    = types.nullOr types.bool;
+        default = null;
+        description = "Use RSS feeds to fetch subscription updates.";
+      };
+      region = mkOption {
+        type    = types.nullOr (types.strMatching "[A-Z]{2}");
+        default = null;
+        example = "US";
+        description = ''
+          Two-letter ISO 3166-1 alpha-2 region code used for recommendations
+          (e.g. "US", "DE", "UG").
+        '';
+      };
+
+      # -- SponsorBlock -------------------------------------------------------
+      useSponsorBlock = mkOption {
+        type    = types.nullOr types.bool;
+        default = null;
+        description = "Enable SponsorBlock segment skipping.";
+      };
+      sponsorBlockSponsor = mkOption {
+        type    = types.nullOr sponsorBlockActionType;
+        default = null;
+        description = "Action for sponsor segments.";
+      };
+      sponsorBlockSelfPromo = mkOption {
+        type    = types.nullOr sponsorBlockActionType;
+        default = null;
+        description = "Action for self-promotion segments.";
+      };
+      sponsorBlockInteraction = mkOption {
+        type    = types.nullOr sponsorBlockActionType;
+        default = null;
+        description = "Action for interaction reminder segments.";
+      };
+      sponsorBlockIntro = mkOption {
+        type    = types.nullOr sponsorBlockActionType;
+        default = null;
+        description = "Action for intro segments.";
+      };
+      sponsorBlockOutro = mkOption {
+        type    = types.nullOr sponsorBlockActionType;
+        default = null;
+        description = "Action for outro segments.";
+      };
+      sponsorBlockPreview = mkOption {
+        type    = types.nullOr sponsorBlockActionType;
+        default = null;
+        description = "Action for preview/recap segments.";
+      };
+      sponsorBlockMusicOffTopic = mkOption {
+        type    = types.nullOr sponsorBlockActionType;
+        default = null;
+        description = "Action for music off-topic segments.";
+      };
+
+      # -- DeArrow ------------------------------------------------------------
+      useDeArrowTitles = mkOption {
+        type    = types.nullOr types.bool;
+        default = null;
+        description = "Replace titles with DeArrow community-sourced titles.";
+      };
+      useDeArrowThumbnails = mkOption {
+        type    = types.nullOr types.bool;
+        default = null;
+        description = "Replace thumbnails with DeArrow community-sourced thumbnails.";
+      };
+
+      # -- Hide / Distraction-free --------------------------------------------
+      hideVideoViews = mkOption {
+        type    = types.nullOr types.bool;
+        default = null;
+        description = "Hide video view counts.";
+      };
+      hideChannelSubscriptions = mkOption {
+        type    = types.nullOr types.bool;
+        default = null;
+        description = "Hide channel subscription counts.";
+      };
+      hideSharingActions = mkOption {
+        type    = types.nullOr types.bool;
+        default = null;
+        description = "Hide sharing action buttons.";
+      };
+      hideWatchedSubs = mkOption {
+        type    = types.nullOr types.bool;
+        default = null;
+        description = "Hide already-watched videos in the subscriptions feed.";
+      };
+      hideLiveStreams = mkOption {
+        type    = types.nullOr types.bool;
+        default = null;
+        description = "Hide live streams from feeds.";
+      };
+      hideUpcomingPremieres = mkOption {
+        type    = types.nullOr types.bool;
+        default = null;
+        description = "Hide upcoming premieres from feeds.";
+      };
+      showDistractionFreeTitles = mkOption {
+        type    = types.nullOr types.bool;
+        default = null;
+        description = "Show distraction-free video titles.";
+      };
+      hideTrendingVideos = mkOption {
+        type    = types.nullOr types.bool;
+        default = null;
+        description = "Hide the trending videos section.";
+      };
+      hidePopularVideos = mkOption {
+        type    = types.nullOr types.bool;
+        default = null;
+        description = "Hide the popular videos section.";
+      };
+      hidePlaylists = mkOption {
+        type    = types.nullOr types.bool;
+        default = null;
+        description = "Hide playlists.";
+      };
+      hideActiveSubscriptions = mkOption {
+        type    = types.nullOr types.bool;
+        default = null;
+        description = "Hide the active subscriptions sidebar widget.";
+      };
+      hideSubscriptionsVideos = mkOption {
+        type    = types.nullOr types.bool;
+        default = null;
+        description = "Hide the Videos tab in subscriptions.";
+      };
+      hideSubscriptionsShorts = mkOption {
+        type    = types.nullOr types.bool;
+        default = null;
+        description = "Hide the Shorts tab in subscriptions.";
+      };
+      hideSubscriptionsCommunity = mkOption {
+        type    = types.nullOr types.bool;
+        default = null;
+        description = "Hide the Community tab in subscriptions.";
+      };
+      hideChannelHome = mkOption {
+        type    = types.nullOr types.bool;
+        default = null;
+        description = "Hide the Home tab on channel pages.";
+      };
+      hideChannelShorts = mkOption {
+        type    = types.nullOr types.bool;
+        default = null;
+        description = "Hide the Shorts tab on channel pages.";
+      };
+      hideChannelPlaylists = mkOption {
+        type    = types.nullOr types.bool;
+        default = null;
+        description = "Hide the Playlists tab on channel pages.";
+      };
+      hideChannelPodcasts = mkOption {
+        type    = types.nullOr types.bool;
+        default = null;
+        description = "Hide the Podcasts tab on channel pages.";
+      };
+      hideChannelCourses = mkOption {
+        type    = types.nullOr types.bool;
+        default = null;
+        description = "Hide the Courses tab on channel pages.";
+      };
+      hideChannelReleases = mkOption {
+        type    = types.nullOr types.bool;
+        default = null;
+        description = "Hide the Releases tab on channel pages.";
+      };
+      hideChannelCommunity = mkOption {
+        type    = types.nullOr types.bool;
+        default = null;
+        description = "Hide the Community tab on channel pages.";
+      };
+      hideFeaturedChannels = mkOption {
+        type    = types.nullOr types.bool;
+        default = null;
+        description = "Hide featured/recommended channels.";
+      };
+      hideVideoLikesAndDislikes = mkOption {
+        type    = types.nullOr types.bool;
+        default = null;
+        description = "Hide like and dislike counts on videos.";
+      };
+      hideChapters = mkOption {
+        type    = types.nullOr types.bool;
+        default = null;
+        description = "Hide video chapters.";
+      };
+      hideVideoDescription = mkOption {
+        type    = types.nullOr types.bool;
+        default = null;
+        description = "Hide video descriptions.";
+      };
+      hideCommentLikes = mkOption {
+        type    = types.nullOr types.bool;
+        default = null;
+        description = "Hide like counts on comments.";
+      };
+      hideCommentPhotos = mkOption {
+        type    = types.nullOr types.bool;
+        default = null;
+        description = "Hide commenter profile photos.";
+      };
+      hideComments = mkOption {
+        type    = types.nullOr types.bool;
+        default = null;
+        description = "Hide the comments section entirely.";
+      };
+      hideRecommendedVideos = mkOption {
+        type    = types.nullOr types.bool;
+        default = null;
+        description = "Hide the recommended videos sidebar.";
+      };
+      hideLiveChat = mkOption {
+        type    = types.nullOr types.bool;
+        default = null;
+        description = "Hide live chat on live streams.";
+      };
+
+      # -- Behaviour ----------------------------------------------------------
+      generalAutoLoadMorePaginatedItemsEnabled = mkOption {
+        type    = types.nullOr types.bool;
+        default = null;
+        description = "Automatically load more items in paginated lists.";
+      };
+      openDeepLinksInNewWindow = mkOption {
+        type    = types.nullOr types.bool;
+        default = null;
+        description = "Open YouTube deep links in a new FreeTube window.";
+      };
+      hideToTrayOnMinimize = mkOption {
+        type    = types.nullOr types.bool;
+        default = null;
+        description = "Minimise to the system tray instead of the taskbar.";
+      };
+      unsubscriptionPopupStatus = mkOption {
+        type    = types.nullOr types.bool;
+        default = null;
+        description = "Show a confirmation popup before unsubscribing from a channel.";
+      };
+      onlyShowLatestFromChannel = mkOption {
+        type    = types.nullOr types.bool;
+        default = null;
+        description = "Only show the latest N videos per channel in the subscription feed.";
+      };
+      onlyShowLatestFromChannelNumber = mkOption {
+        type    = types.nullOr types.ints.positive;
+        default = null;
+        description = ''
+          Number of latest videos per channel to show when
+          {option}`onlyShowLatestFromChannel` is enabled.
+        '';
+      };
+    };
+  };
+
 in
 {
   # Replace the upstream HM freetube module to avoid duplicate option
@@ -86,17 +469,26 @@ in
     package = mkPackageOption pkgs "freetube" { nullable = true; };
 
     settings = mkOption {
-      type = types.attrs;
+      type = settingsType;
       default = {};
       example = literalExpression ''
         {
           baseTheme           = "catppuccinMocha";
           defaultQuality      = "1080";
+          backendPreference   = "invidious";
           backendFallback     = true;
           checkForUpdates     = false;
-          allowDashAv1Formats = true;
           saveHistory         = false;
+          useSponsorBlock     = true;
           sponsorBlockSponsor = "skip";
+          useDeArrowTitles    = true;
+          currentLocale       = "de-DE";
+          region              = "UG";
+          landingPage         = "subscribedchannels";
+          bounds = {
+            x = 0; y = 0; width = 960; height = 1050;
+            maximized = true; fullScreen = false;
+          };
         }
       '';
       description = ''
@@ -104,13 +496,11 @@ in
         {file}`$XDG_CONFIG_HOME/FreeTube/hm_settings.db` and merged into
         the live {file}`settings.db` on every activation.
 
-        Each key/value pair becomes one NeDB record
-        (`{"_id":"<key>","value":<value>}`). Discover available keys by
-        changing settings in the FreeTube GUI and inspecting
-        {file}`~/.config/FreeTube/settings.db`.
-
-        Settings not listed here are left as-is in {file}`settings.db`,
-        so runtime changes to other settings are preserved across rebuilds.
+        Each non-null option becomes one NeDB record
+        (`{"_id":"<key>","value":<value>}`). Options left at their default
+        of `null` are omitted and therefore left untouched in
+        {file}`settings.db`, so runtime changes to those settings are
+        preserved across rebuilds.
       '';
     };
 
@@ -149,20 +539,33 @@ in
 
     home.packages = mkIf (cfg.package != null) [ cfg.package ];
 
-    xdg.configFile."FreeTube/hm_settings.db" = mkIf (cfg.settings != {}) {
+    xdg.configFile."FreeTube/hm_settings.db" = mkIf hasSettings {
       text = settingsText;
     };
 
-    xdg.configFile."FreeTube/profiles.db" = mkIf (cfg.profiles != []) {
+    xdg.configFile."FreeTube/hm_profiles.db" = mkIf (cfg.profiles != []) {
       text = profilesText;
     };
+
+    # Copy hm_profiles.db over the live profiles.db on every activation.
+    # A full replace is intentional: profiles are fully declarative, so any
+    # runtime changes (GUI-added subs, _rev fields) are discarded on rebuild.
+    home.activation.freetubeSyncProfiles = lib.hm.dag.entryAfter
+      [ "writeBoundary" ]
+      (mkIf (cfg.profiles != []) ''
+        _ft_profiles="$HOME/.config/FreeTube/profiles.db"
+        _ft_hm_profiles="${config.xdg.configHome}/FreeTube/hm_profiles.db"
+        run mkdir -p "$(dirname "$_ft_profiles")"
+        run cp "$_ft_hm_profiles" "$_ft_profiles"
+        unset _ft_profiles _ft_hm_profiles
+      '');
 
     # Merge hm_settings.db into the live settings.db on every activation.
     # For each record: strip any existing line with the same _id, then append
     # the new line. This preserves runtime-written settings not declared here.
     home.activation.freetubeSyncSettings = lib.hm.dag.entryAfter
       [ "writeBoundary" ]
-      (mkIf (cfg.settings != {}) ''
+      (mkIf hasSettings ''
         _ft_settings="$HOME/.config/FreeTube/settings.db"
         _ft_hm="${config.xdg.configHome}/FreeTube/hm_settings.db"
         run mkdir -p "$(dirname "$_ft_settings")"
