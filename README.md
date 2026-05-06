@@ -258,9 +258,16 @@ programs.freetube.settings = {
 
 ## `programs.freetube.profiles` reference
 
-Profiles are **fully declarative**: the module writes your profiles to `hm_profiles.db` (a Nix-store-managed staging file) and copies it over the live `profiles.db` on every `home-manager switch`. Leave `profiles` at `[]` (the default) to let FreeTube manage subscriptions at runtime.
+Profiles are **fully declarative**: on every `home-manager switch` the module resolves any channel handles, then writes the final `profiles.db`. Leave `profiles` at `[]` (the default) to let FreeTube manage subscriptions at runtime.
+
+### Automatic handle resolution
+
+Set `handle` instead of `id` and the activation script will query the configured Invidious instance to look up the channel ID automatically. Resolved IDs are cached in `~/.config/FreeTube/channel_ids.lock.json` so each handle is only fetched once. Delete that file to force a fresh lookup.
 
 ```nix
+# Optional: override the Invidious instance used for handle resolution
+programs.freetube.invidiousInstance = "https://inv.nadeko.net";
+
 programs.freetube.profiles = [
   {
     _id       = "allChannels"; # internal FreeTube ID; the built-in profile uses "allChannels"
@@ -268,17 +275,19 @@ programs.freetube.profiles = [
     bgColor   = "#BD93F9";     # hex background colour for the profile badge
     textColor = "#000000";     # hex text colour for the profile badge
     subscriptions = [
+      # Provide a handle — ID is resolved automatically at switch time
+      { handle = "@DistroTube";    name = "DistroTube"; }
+      { handle = "@Computerphile"; name = "Computerphile"; }
+
+      # Or supply the channel ID directly (no network call needed)
       {
-        id        = "UCVls1GmFKf6WlTraIb_IaJg"; # YouTube channel ID
+        id        = "UCVls1GmFKf6WlTraIb_IaJg";
         name      = "DistroTube";
-        thumbnail = ""; # URL or empty string
-      }
-      {
-        id        = "UC9-y-6csu5WGm29I7JiwpnA";
-        name      = "Computerphile";
-        thumbnail = "";
+        thumbnail = ""; # optional — FreeTube fetches it if left empty
       }
     ];
   }
 ];
 ```
+
+Each subscription must have either `id` or `handle` set — omitting both is a Nix evaluation error.

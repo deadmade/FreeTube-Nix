@@ -9,9 +9,9 @@ let
     types
     literalExpression
     concatStrings
-    concatMapStrings
     mapAttrsToList
     filterAttrs
+    flatten
     ;
 
   cfg = config.programs.freetube;
@@ -25,9 +25,9 @@ let
     builtins.toJSON { _id = name; inherit value; } + "\n"
   ) filteredSettings);
 
-  profilesText = concatMapStrings (profile:
-    builtins.toJSON profile + "\n"
-  ) cfg.profiles;
+  # Serialised as a single JSON array; the activation script resolves handles,
+  # then writes the final NeDB-format profiles.db.
+  profilesJson = builtins.toJSON cfg.profiles;
 
   # ---------------------------------------------------------------------------
   # Sub-types
@@ -51,17 +51,33 @@ let
   subscriptionType = types.submodule {
     options = {
       id = mkOption {
-        type = types.str;
-        description = "YouTube channel ID.";
+        type    = types.nullOr types.str;
+        default = null;
+        description = ''
+          YouTube channel ID (e.g. "UCfEkarF_pUayXFVWHHsm11w").
+          Either this or {option}`handle` must be set.
+        '';
+      };
+      handle = mkOption {
+        type    = types.nullOr types.str;
+        default = null;
+        example = "@CalcioBerlin";
+        description = ''
+          YouTube channel handle (e.g. "@CalcioBerlin"). When set and
+          {option}`id` is null, the activation script queries
+          {option}`programs.freetube.invidiousInstance` to resolve the
+          channel ID automatically and caches the result in
+          {file}`~/.config/FreeTube/channel_ids.lock.json`.
+        '';
       };
       name = mkOption {
         type = types.str;
         description = "Human-readable channel name.";
       };
       thumbnail = mkOption {
-        type = types.str;
+        type    = types.str;
         default = "";
-        description = "URL to the channel thumbnail (may be left empty).";
+        description = "URL to the channel thumbnail (leave empty to let FreeTube fetch it).";
       };
     };
   };
@@ -468,6 +484,20 @@ in
 
     package = mkPackageOption pkgs "freetube" { nullable = true; };
 
+    invidiousInstance = mkOption {
+      type    = types.str;
+      default = "https://inv.nadeko.net";
+      example = "https://invidious.example.com";
+      description = ''
+        Invidious instance base URL used by the activation script to resolve
+        channel handles to YouTube channel IDs.
+
+        The resolved IDs are cached in
+        {file}`~/.config/FreeTube/channel_ids.lock.json`; delete that file
+        to force a fresh lookup (e.g. after changing instance).
+      '';
+    };
+
     settings = mkOption {
       type = settingsType;
       default = {};
@@ -537,27 +567,79 @@ in
 
   config = mkIf cfg.enable {
 
+    assertions = flatten (map (profile:
+      map (sub: {
+        assertion = sub.id != null || sub.handle != null;
+        message = ''
+          programs.freetube: subscription "${sub.name}" in profile "${profile.name}" \
+          must have either `id` or `handle` set.
+        '';
+      }) profile.subscriptions
+    ) cfg.profiles);
+
     home.packages = mkIf (cfg.package != null) [ cfg.package ];
 
     xdg.configFile."FreeTube/hm_settings.db" = mkIf hasSettings {
       text = settingsText;
     };
 
-    xdg.configFile."FreeTube/hm_profiles.db" = mkIf (cfg.profiles != []) {
-      text = profilesText;
+    # Raw JSON written to the Nix store; the activation script processes it into
+    # the mutable NeDB profiles.db (resolving handles along the way).
+    xdg.configFile."FreeTube/hm_profiles_raw.json" = mkIf (cfg.profiles != []) {
+      text = profilesJson;
     };
 
-    # Copy hm_profiles.db over the live profiles.db on every activation.
-    # A full replace is intentional: profiles are fully declarative, so any
-    # runtime changes (GUI-added subs, _rev fields) are discarded on rebuild.
+    # Resolve channel handles → IDs via Invidious, then write profiles.db.
+    # IDs are cached in channel_ids.lock.json so each handle is only fetched once.
     home.activation.freetubeSyncProfiles = lib.hm.dag.entryAfter
       [ "writeBoundary" ]
       (mkIf (cfg.profiles != []) ''
+        _ft_raw="${config.xdg.configHome}/FreeTube/hm_profiles_raw.json"
+        _ft_cache="$HOME/.config/FreeTube/channel_ids.lock.json"
         _ft_profiles="$HOME/.config/FreeTube/profiles.db"
-        _ft_hm_profiles="${config.xdg.configHome}/FreeTube/hm_profiles.db"
+        _ft_invidious="${cfg.invidiousInstance}"
+
         run mkdir -p "$(dirname "$_ft_profiles")"
-        run cp "$_ft_hm_profiles" "$_ft_profiles"
-        unset _ft_profiles _ft_hm_profiles
+        [ -f "$_ft_cache" ] || echo '{}' > "$_ft_cache"
+
+        # Resolve any handle that is not yet in the cache
+        for _ft_handle in $(${pkgs.jq}/bin/jq -r \
+            '[.[].subscriptions[] | select(.id == null and .handle != null) | .handle] | unique[]' \
+            "$_ft_raw"); do
+          if ! ${pkgs.jq}/bin/jq -e --arg h "$_ft_handle" 'has($h)' "$_ft_cache" > /dev/null 2>&1; then
+            echo "freetube: resolving $_ft_handle via $_ft_invidious" >&2
+            _ft_id=$(${pkgs.curl}/bin/curl -sf --max-time 10 \
+                "$_ft_invidious/api/v1/channels/$_ft_handle" \
+              | ${pkgs.jq}/bin/jq -r '.authorId // empty' 2>/dev/null || true)
+            if [ -n "$_ft_id" ]; then
+              ${pkgs.jq}/bin/jq --arg h "$_ft_handle" --arg id "$_ft_id" \
+                '.[$h] = $id' "$_ft_cache" > "$_ft_cache.tmp" \
+                && mv "$_ft_cache.tmp" "$_ft_cache"
+            else
+              echo "freetube: warning: could not resolve handle $_ft_handle — subscription skipped" >&2
+            fi
+          fi
+        done
+
+        # Emit one compact JSON object per profile (NeDB format)
+        ${pkgs.jq}/bin/jq -c \
+          --argjson cache "$(cat "$_ft_cache")" \
+          '.[] | {
+            _id,
+            name,
+            bgColor,
+            textColor,
+            subscriptions: [
+              .subscriptions[] |
+              if (.id == null and .handle != null) then
+                . + { id: ($cache[.handle] // null) }
+              else . end |
+              del(.handle) |
+              select(.id != null)
+            ]
+          }' "$_ft_raw" > "$_ft_profiles"
+
+        unset _ft_raw _ft_cache _ft_profiles _ft_invidious _ft_handle _ft_id
       '');
 
     # Merge hm_settings.db into the live settings.db on every activation.
