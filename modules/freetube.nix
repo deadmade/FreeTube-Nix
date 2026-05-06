@@ -613,11 +613,13 @@ in
             _ft_id=""
 
             _ft_id=$(${pkgs.curl}/bin/curl -s --max-time 10 \
+                --cacert "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt" \
                 "$_ft_invidious/api/v1/channels/$_ft_handle" \
               | ${pkgs.jq}/bin/jq -r '(.authorId // .ucid) // empty' 2>/dev/null || true)
 
             if [ -z "$_ft_id" ]; then
               _ft_id=$(${pkgs.curl}/bin/curl -s --max-time 10 \
+                  --cacert "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt" \
                   --get \
                   --data-urlencode "q=$_ft_handle" \
                   --data-urlencode "type=channel" \
