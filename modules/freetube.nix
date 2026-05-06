@@ -602,21 +602,39 @@ in
         run mkdir -p "$(dirname "$_ft_profiles")"
         [ -f "$_ft_cache" ] || echo '{}' > "$_ft_cache"
 
-        # Resolve any handle that is not yet in the cache
+        # Resolve any handle not yet in the cache.
+        # Attempt 1: /channels/<handle> (fast, supported on most instances).
+        # Attempt 2: /search?q=<handle>&type=channel (universal fallback).
         for _ft_handle in $(${pkgs.jq}/bin/jq -r \
             '[.[].subscriptions[] | select(.id == null and .handle != null) | .handle] | unique[]' \
             "$_ft_raw"); do
           if ! ${pkgs.jq}/bin/jq -e --arg h "$_ft_handle" 'has($h)' "$_ft_cache" > /dev/null 2>&1; then
             echo "freetube: resolving $_ft_handle via $_ft_invidious" >&2
-            _ft_id=$(${pkgs.curl}/bin/curl -sf --max-time 10 \
+            _ft_id=""
+
+            _ft_id=$(${pkgs.curl}/bin/curl -s --max-time 10 \
                 "$_ft_invidious/api/v1/channels/$_ft_handle" \
-              | ${pkgs.jq}/bin/jq -r '.authorId // empty' 2>/dev/null || true)
+              | ${pkgs.jq}/bin/jq -r '(.authorId // .ucid) // empty' 2>/dev/null || true)
+
+            if [ -z "$_ft_id" ]; then
+              _ft_id=$(${pkgs.curl}/bin/curl -s --max-time 10 \
+                  --get \
+                  --data-urlencode "q=$_ft_handle" \
+                  --data-urlencode "type=channel" \
+                  "$_ft_invidious/api/v1/search" \
+                | ${pkgs.jq}/bin/jq -r \
+                  '[.[] | select(.type == "channel")] | .[0].authorId // empty' \
+                  2>/dev/null || true)
+            fi
+
             if [ -n "$_ft_id" ]; then
+              echo "freetube: $_ft_handle → $_ft_id" >&2
               ${pkgs.jq}/bin/jq --arg h "$_ft_handle" --arg id "$_ft_id" \
                 '.[$h] = $id' "$_ft_cache" > "$_ft_cache.tmp" \
                 && mv "$_ft_cache.tmp" "$_ft_cache"
             else
-              echo "freetube: warning: could not resolve handle $_ft_handle — subscription skipped" >&2
+              echo "freetube: warning: could not resolve $_ft_handle" >&2
+              echo "freetube: check that $_ft_invidious is reachable, or set programs.freetube.invidiousInstance to a different instance" >&2
             fi
           fi
         done
